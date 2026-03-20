@@ -15,6 +15,14 @@
     </div>
 
     <div class="controls">
+      <div class="voice-control">
+        <label for="voice-select">Voix :</label>
+        <select id="voice-select">
+          <option value="">Cliquer sur Lire pour charger les voix</option>
+        </select>
+        <p class="voice-hint" id="voice-hint"></p>
+      </div>
+
       <div class="speed-control">
         <label for="speed">Vitesse : <span id="speed-value">1.0</span>x</label>
         <input type="range" id="speed" min="0.5" max="3" step="0.1" value="1.0">

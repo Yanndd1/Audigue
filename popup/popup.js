@@ -5,23 +5,32 @@ const speedSlider = document.getElementById("speed");
 const speedValue = document.getElementById("speed-value");
 const statusEl = document.getElementById("status");
 const detectedLangEl = document.getElementById("detected-lang");
+const voiceSelect = document.getElementById("voice-select");
+const voiceHint = document.getElementById("voice-hint");
 
 let currentTabId = null;
 
-// Load saved speed
-chrome.storage.local.get("speed", (data) => {
+// Load saved preferences
+chrome.storage.local.get(["speed", "voiceURI"], (data) => {
   if (data.speed) {
     speedSlider.value = data.speed;
     speedValue.textContent = parseFloat(data.speed).toFixed(1);
   }
+  // voiceURI will be applied when voice list arrives
 });
 
 speedSlider.addEventListener("input", () => {
   const val = parseFloat(speedSlider.value).toFixed(1);
   speedValue.textContent = val;
   chrome.storage.local.set({ speed: val });
-  // Update speed in real-time if speaking
   sendToContent("setSpeed", { speed: parseFloat(val) });
+});
+
+voiceSelect.addEventListener("change", () => {
+  const voiceURI = voiceSelect.value;
+  chrome.storage.local.set({ voiceURI });
+  sendToContent("setVoice", { voiceURI });
+  updateVoiceHint();
 });
 
 btnPlay.addEventListener("click", async () => {
@@ -33,18 +42,18 @@ btnPlay.addEventListener("click", async () => {
   }
   currentTabId = tab.id;
 
-  // Inject content script if needed
   try {
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       files: ["content.js"],
     });
   } catch (e) {
-    // Script may already be injected, ignore
+    // Script may already be injected
   }
 
   const speed = parseFloat(speedSlider.value);
-  sendToContent("play", { speed });
+  const voiceURI = voiceSelect.value || undefined;
+  sendToContent("play", { speed, voiceURI });
 });
 
 btnPause.addEventListener("click", () => {
@@ -64,6 +73,46 @@ function sendToContent(action, data = {}) {
 async function getCurrentTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab;
+}
+
+function updateVoiceHint() {
+  const selected = voiceSelect.selectedOptions[0];
+  if (!selected || !selected.dataset.local) {
+    voiceHint.textContent = "";
+    return;
+  }
+  const isLocal = selected.dataset.local === "true";
+  voiceHint.textContent = isLocal ? "Voix locale" : "Voix réseau (peut nécessiter une connexion)";
+  voiceHint.className = isLocal ? "voice-hint local" : "voice-hint remote";
+}
+
+function populateVoices(voices, selectedURI) {
+  voiceSelect.innerHTML = "";
+  if (!voices.length) {
+    voiceSelect.innerHTML = '<option value="">Aucune voix disponible</option>';
+    return;
+  }
+
+  // Load saved preference
+  chrome.storage.local.get("voiceURI", (data) => {
+    const savedURI = data.voiceURI;
+    const preferredURI = savedURI || selectedURI;
+
+    voices.forEach((v) => {
+      const opt = document.createElement("option");
+      opt.value = v.voiceURI;
+      // Build descriptive label
+      let label = v.name;
+      if (v.local) label += " [local]";
+      if (v.name.toLowerCase().includes("natural")) label += " *";
+      opt.textContent = label;
+      opt.dataset.local = v.local;
+      if (v.voiceURI === preferredURI) opt.selected = true;
+      voiceSelect.appendChild(opt);
+    });
+
+    updateVoiceHint();
+  });
 }
 
 function updateUI(state, lang) {
@@ -106,9 +155,12 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "tts-state") {
     updateUI(msg.state, msg.lang);
   }
+  if (msg.type === "tts-voices") {
+    populateVoices(msg.voices, msg.selectedVoiceURI);
+  }
 });
 
-// On popup open, query current state
+// On popup open, query current state and voices
 (async () => {
   const tab = await getCurrentTab();
   if (tab) {

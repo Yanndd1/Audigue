@@ -8,10 +8,11 @@
   let state = "stopped"; // stopped | playing | paused
   let detectedLang = "en";
   let currentSpeed = 1.0;
+  let selectedVoiceURI = null;
+  let cancelledByUser = false; // guards against cancel() triggering onend
 
   /**
    * Extract readable text from the page, split into chunks.
-   * Skips scripts, styles, nav, footer, and hidden elements.
    */
   function extractText() {
     const skipTags = new Set([
@@ -20,7 +21,6 @@
     ]);
     const skipRoles = new Set(["navigation", "banner", "contentinfo"]);
 
-    // Try to find main content area first
     const main = document.querySelector("main, article, [role='main']");
     const root = main || document.body;
 
@@ -34,7 +34,6 @@
         if (el.closest("nav, footer, header, [role='navigation'], [role='banner'], [role='contentinfo']")) {
           return NodeFilter.FILTER_REJECT;
         }
-        // Skip hidden elements
         const style = getComputedStyle(el);
         if (style.display === "none" || style.visibility === "hidden") {
           return NodeFilter.FILTER_REJECT;
@@ -49,7 +48,6 @@
     while (walker.nextNode()) {
       const text = walker.currentNode.textContent.trim();
       current += " " + text;
-      // Split into ~500 char chunks at sentence boundaries
       if (current.length > 500) {
         const sentenceEnd = current.search(/[.!?]\s/);
         if (sentenceEnd > 100) {
@@ -68,16 +66,13 @@
   }
 
   /**
-   * Detect language of text. Uses the <html lang> attribute first,
-   * then falls back to simple heuristic.
+   * Detect language of text.
    */
   function detectLanguage(text) {
-    // Check html lang attribute
     const htmlLang = document.documentElement.lang?.toLowerCase() || "";
     if (htmlLang.startsWith("fr")) return "fr";
     if (htmlLang.startsWith("en")) return "en";
 
-    // Check meta content-language
     const meta = document.querySelector('meta[http-equiv="content-language"]');
     if (meta) {
       const lang = meta.content?.toLowerCase() || "";
@@ -85,40 +80,69 @@
       if (lang.startsWith("en")) return "en";
     }
 
-    // Heuristic: count common French words
     const frenchWords = /\b(le|la|les|de|des|du|un|une|et|est|en|que|qui|dans|pour|pas|sur|ce|avec|sont|cette|aux|ses|par|nous|vous|ils|mais|ont|être|fait|tout|comme|aussi|leur|bien|même|après|autre|avant|entre|notre|sans|sous|très|chez|donc|elle|tous|peut|plus)\b/gi;
     const frCount = (text.match(frenchWords) || []).length;
     const wordCount = text.split(/\s+/).length;
-    const frRatio = frCount / wordCount;
-
-    return frRatio > 0.08 ? "fr" : "en";
+    return (frCount / wordCount) > 0.08 ? "fr" : "en";
   }
 
   /**
-   * Find the best voice for a given language.
+   * Get all available voices for a language, sorted by quality.
    */
-  function findVoice(lang) {
+  function getVoicesForLang(lang) {
     const voices = speechSynthesis.getVoices();
     const langPrefix = lang === "fr" ? "fr" : "en";
-
-    // Prefer natural/high-quality voices
-    const natural = voices.find(
-      (v) => v.lang.startsWith(langPrefix) && v.name.toLowerCase().includes("natural")
-    );
-    if (natural) return natural;
-
-    // Then prefer local voices
-    const local = voices.find(
-      (v) => v.lang.startsWith(langPrefix) && v.localService
-    );
-    if (local) return local;
-
-    // Any voice matching the language
-    return voices.find((v) => v.lang.startsWith(langPrefix)) || null;
+    return voices
+      .filter((v) => v.lang.startsWith(langPrefix))
+      .sort((a, b) => {
+        // Natural voices first
+        const aNatural = a.name.toLowerCase().includes("natural") ? 0 : 1;
+        const bNatural = b.name.toLowerCase().includes("natural") ? 0 : 1;
+        if (aNatural !== bNatural) return aNatural - bNatural;
+        // Then local voices
+        if (a.localService !== b.localService) return a.localService ? -1 : 1;
+        // Then alphabetical
+        return a.name.localeCompare(b.name);
+      });
   }
 
-  function notifyState() {
-    chrome.runtime.sendMessage({ type: "tts-state", state, lang: detectedLang });
+  /**
+   * Find the voice to use: selected by user, or best default.
+   */
+  function getActiveVoice() {
+    const voices = speechSynthesis.getVoices();
+    if (selectedVoiceURI) {
+      const match = voices.find((v) => v.voiceURI === selectedVoiceURI);
+      if (match) return match;
+    }
+    // Fallback to best available
+    const langVoices = getVoicesForLang(detectedLang);
+    return langVoices[0] || null;
+  }
+
+  function notifyState(extra = {}) {
+    chrome.runtime.sendMessage({
+      type: "tts-state",
+      state,
+      lang: detectedLang,
+      ...extra,
+    });
+  }
+
+  function sendVoiceList() {
+    const voices = getVoicesForLang(detectedLang);
+    const voiceList = voices.map((v) => ({
+      name: v.name,
+      lang: v.lang,
+      voiceURI: v.voiceURI,
+      local: v.localService,
+    }));
+    const active = getActiveVoice();
+    chrome.runtime.sendMessage({
+      type: "tts-voices",
+      voices: voiceList,
+      selectedVoiceURI: active ? active.voiceURI : null,
+    });
   }
 
   function speakChunk(index) {
@@ -132,10 +156,15 @@
     utterance.lang = detectedLang === "fr" ? "fr-FR" : "en-US";
     utterance.rate = currentSpeed;
 
-    const voice = findVoice(detectedLang);
+    const voice = getActiveVoice();
     if (voice) utterance.voice = voice;
 
     utterance.onend = () => {
+      // Only chain to next chunk if this wasn't a user-initiated cancel
+      if (cancelledByUser) {
+        cancelledByUser = false;
+        return;
+      }
       if (state === "playing") {
         speakChunk(index + 1);
       }
@@ -151,9 +180,12 @@
     speechSynthesis.speak(utterance);
   }
 
-  function play(speed) {
+  function play(speed, voiceURI) {
+    cancelledByUser = true;
     speechSynthesis.cancel();
     currentSpeed = speed || currentSpeed;
+    if (voiceURI !== undefined) selectedVoiceURI = voiceURI;
+
     const chunks = extractText();
     if (!chunks.length) {
       state = "error";
@@ -168,13 +200,14 @@
     state = "playing";
     notifyState();
 
-    // Ensure voices are loaded
     const voices = speechSynthesis.getVoices();
     if (voices.length === 0) {
       speechSynthesis.addEventListener("voiceschanged", () => {
+        sendVoiceList();
         speakChunk(0);
       }, { once: true });
     } else {
+      sendVoiceList();
       speakChunk(0);
     }
   }
@@ -192,6 +225,7 @@
   }
 
   function stop() {
+    cancelledByUser = true;
     speechSynthesis.cancel();
     state = "stopped";
     currentUtterances = [];
@@ -201,8 +235,18 @@
 
   function setSpeed(speed) {
     currentSpeed = speed;
-    // If currently speaking, restart current chunk with new speed
     if (state === "playing") {
+      // Cancel current utterance and restart chunk with new speed
+      cancelledByUser = true;
+      speechSynthesis.cancel();
+      speakChunk(currentIndex);
+    }
+  }
+
+  function setVoice(voiceURI) {
+    selectedVoiceURI = voiceURI;
+    if (state === "playing") {
+      cancelledByUser = true;
       speechSynthesis.cancel();
       speakChunk(currentIndex);
     }
@@ -212,7 +256,7 @@
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     switch (msg.action) {
       case "play":
-        play(msg.speed);
+        play(msg.speed, msg.voiceURI);
         break;
       case "pause":
         pause();
@@ -223,8 +267,15 @@
       case "setSpeed":
         setSpeed(msg.speed);
         break;
+      case "setVoice":
+        setVoice(msg.voiceURI);
+        break;
       case "getState":
         notifyState();
+        sendVoiceList();
+        break;
+      case "getVoices":
+        sendVoiceList();
         break;
     }
     sendResponse({ ok: true });

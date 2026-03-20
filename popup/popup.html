@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Audigue</h1>
+    <p class="subtitle">Lecture audio de pages web</p>
+
+    <div class="lang-display">
+      <span class="lang-label">Langue détectée :</span>
+      <span id="detected-lang" class="lang-value">—</span>
+    </div>
+
+    <div class="controls">
+      <div class="speed-control">
+        <label for="speed">Vitesse : <span id="speed-value">1.0</span>x</label>
+        <input type="range" id="speed" min="0.5" max="3" step="0.1" value="1.0">
+      </div>
+
+      <div class="buttons">
+        <button id="btn-play" class="btn btn-primary" title="Lire">
+          <svg viewBox="0 0 24 24" width="20" height="20"><polygon points="5,3 19,12 5,21" fill="currentColor"/></svg>
+          <span>Lire</span>
+        </button>
+        <button id="btn-pause" class="btn" title="Pause" disabled>
+          <svg viewBox="0 0 24 24" width="20" height="20"><rect x="5" y="3" width="4" height="18" fill="currentColor"/><rect x="15" y="3" width="4" height="18" fill="currentColor"/></svg>
+          <span>Pause</span>
+        </button>
+        <button id="btn-stop" class="btn" title="Arrêter" disabled>
+          <svg viewBox="0 0 24 24" width="20" height="20"><rect x="4" y="4" width="16" height="16" rx="2" fill="currentColor"/></svg>
+          <span>Stop</span>
+        </button>
+      </div>
+    </div>
+
+    <div id="status" class="status"></div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

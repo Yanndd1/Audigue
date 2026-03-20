@@ -115,21 +115,22 @@ function populateVoices(voices, selectedURI) {
   });
 }
 
-function updateUI(state, lang) {
+function updateUI(state, lang, chunkInfo) {
+  const progress = chunkInfo ? ` (${chunkInfo.current}/${chunkInfo.total})` : "";
   switch (state) {
     case "playing":
       btnPlay.disabled = true;
       btnPause.disabled = false;
       btnStop.disabled = false;
       btnPause.querySelector("span").textContent = "Pause";
-      statusEl.textContent = "Lecture en cours…";
+      statusEl.textContent = "Lecture en cours…" + progress;
       break;
     case "paused":
       btnPlay.disabled = true;
       btnPause.disabled = false;
       btnStop.disabled = false;
       btnPause.querySelector("span").textContent = "Reprendre";
-      statusEl.textContent = "En pause";
+      statusEl.textContent = "En pause" + progress;
       break;
     case "stopped":
       btnPlay.disabled = false;
@@ -153,7 +154,7 @@ function updateUI(state, lang) {
 // Listen for messages from content script
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "tts-state") {
-    updateUI(msg.state, msg.lang);
+    updateUI(msg.state, msg.lang, msg.chunkInfo);
   }
   if (msg.type === "tts-voices") {
     populateVoices(msg.voices, msg.selectedVoiceURI);

@@ -9,7 +9,7 @@
   let detectedLang = "en";
   let currentSpeed = 1.0;
   let selectedVoiceURI = null;
-  let cancelledByUser = false;
+  let generation = 0; // incremented on each play/stop/setSpeed/setVoice to invalidate old callbacks
   let keepAliveTimer = null;
 
   // ---- Ad / junk selectors to skip ----
@@ -20,64 +20,75 @@
     "[class*='recommended']", "[class*='sidebar']", "[class*='widget']",
     "[class*='newsletter']", "[class*='share']", "[class*='social']",
     "[class*='comment']", "[class*='cookie']", "[class*='popup']",
-    "[class*='modal']", "[class*='banner']",
+    "[class*='modal']", "[class*='banner']", "[class*='callout']",
+    "[class*='recirc']", "[class*='trending']", "[class*='popular']",
+    "[class*='more-stories']", "[class*='read-more']",
     "[id*='ad-']", "[id*='ad_']", "[id*='ads-']", "[id*='ads_']",
     "[id*='advert']", "[id*='sponsor']", "[id*='sidebar']",
     "[id*='related']", "[id*='recommended']", "[id*='comment']",
     "[id*='newsletter']", "[id*='cookie']",
     "[data-ad]", "[data-ads]", "[data-ad-slot]", "[data-testid*='ad']",
     "aside", "ins.adsbygoogle", ".ad", ".ads", "#ad", "#ads",
-    "[role='complementary']", "[role='banner']", "[aria-label*='publicité']",
-    "[aria-label*='advertisement']", "[aria-label*='sponsored']",
+    "[role='complementary']", "[role='banner']",
+    "[aria-label*='publicité']", "[aria-label*='advertisement']",
+    "[aria-label*='sponsored']",
+    "nav", "footer", "header",
+    "[role='navigation']", "[role='contentinfo']", "[role='search']",
   ];
 
+  const AD_SELECTOR_COMBINED = AD_SELECTORS.join(", ");
+
   /**
-   * Check if an element is inside an ad or junk container.
+   * Check if an element is inside an ad/junk/nav container.
    */
-  function isAdOrJunk(el) {
-    const combined = AD_SELECTORS.join(", ");
-    return !!el.closest(combined);
+  function isJunk(el) {
+    return !!el.closest(AD_SELECTOR_COMBINED);
+  }
+
+  /**
+   * Check if element is visible.
+   */
+  function isVisible(el) {
+    const style = getComputedStyle(el);
+    return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
   }
 
   /**
    * Extract the page/article title.
    */
   function extractTitle() {
-    // Try article-specific headings first
     const articleH1 = document.querySelector(
       "article h1, main h1, [role='main'] h1, .article-title, .post-title, .entry-title"
     );
     if (articleH1) return articleH1.textContent.trim();
 
-    // Try the first h1 on the page
     const h1 = document.querySelector("h1");
     if (h1) return h1.textContent.trim();
 
-    // Try og:title meta
     const ogTitle = document.querySelector('meta[property="og:title"]');
     if (ogTitle && ogTitle.content) return ogTitle.content.trim();
 
-    // Fallback to document title
     return document.title.trim();
   }
 
   /**
-   * Extract readable article text from the page, split into chunks.
-   * Reads title first, then body. Skips ads, sidebars, related content.
+   * Extract readable article text using semantic elements only.
+   * Reads: title, then h2-h6 headings and <p>, <blockquote>, <li>, <figcaption> within the article.
+   * Skips: ads, nav, sidebar, comments, share widgets, cookie banners, etc.
    */
   function extractText() {
-    const skipTags = new Set([
-      "SCRIPT", "STYLE", "NOSCRIPT", "SVG", "IMG", "VIDEO", "AUDIO",
-      "IFRAME", "CANVAS", "NAV", "FOOTER", "HEADER", "BUTTON", "INPUT",
-      "SELECT", "TEXTAREA", "FORM",
-    ]);
-    const skipRoles = new Set(["navigation", "banner", "contentinfo", "complementary", "search"]);
-
     // Find main content area
-    const main = document.querySelector(
-      "article, [role='article'], main, [role='main'], .article-body, .post-content, .entry-content, .story-body, .article-content"
+    const root = document.querySelector(
+      "article, [role='article'], main, [role='main'], " +
+      ".article-body, .article__body, .post-content, .entry-content, " +
+      ".story-body, .article-content, .body__inner-container"
+    ) || document.body;
+
+    // Semantic elements that contain readable article text
+    const contentElements = root.querySelectorAll(
+      "p, h1, h2, h3, h4, h5, h6, blockquote, li, figcaption, " +
+      "[class*='paragraph'], [class*='body-text'], [data-testid*='paragraph']"
     );
-    const root = main || document.body;
 
     const chunks = [];
 
@@ -87,58 +98,40 @@
       chunks.push(title);
     }
 
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode(node) {
-        const el = node.parentElement;
-        if (!el) return NodeFilter.FILTER_REJECT;
-        if (skipTags.has(el.tagName)) return NodeFilter.FILTER_REJECT;
-
-        const role = el.getAttribute("role");
-        if (role && skipRoles.has(role)) return NodeFilter.FILTER_REJECT;
-
-        // Skip nav, footer, header, etc.
-        if (el.closest("nav, footer, header, [role='navigation'], [role='banner'], [role='contentinfo']")) {
-          return NodeFilter.FILTER_REJECT;
-        }
-
-        // Skip ads and junk
-        if (isAdOrJunk(el)) return NodeFilter.FILTER_REJECT;
-
-        // Skip hidden elements
-        const style = getComputedStyle(el);
-        if (style.display === "none" || style.visibility === "hidden") {
-          return NodeFilter.FILTER_REJECT;
-        }
-
-        // Skip tiny text likely to be labels/buttons
-        if (style.fontSize && parseFloat(style.fontSize) < 8) {
-          return NodeFilter.FILTER_REJECT;
-        }
-
-        const text = node.textContent.trim();
-        if (!text) return NodeFilter.FILTER_REJECT;
-
-        // Skip text that looks like link lists (very short with many siblings that are links)
-        const parent = el.parentElement;
-        if (parent) {
-          const links = parent.querySelectorAll("a");
-          const allText = parent.textContent.trim();
-          // If parent is mostly links and short items, skip
-          if (links.length > 3 && allText.length < links.length * 80) {
-            return NodeFilter.FILTER_REJECT;
-          }
-        }
-
-        return NodeFilter.FILTER_ACCEPT;
-      },
-    });
-
     let current = "";
-    while (walker.nextNode()) {
-      const text = walker.currentNode.textContent.trim();
+
+    for (const el of contentElements) {
+      // Skip if inside junk container
+      if (isJunk(el)) continue;
+      // Skip if not visible
+      if (!isVisible(el)) continue;
+
+      const text = el.textContent.trim();
+      if (!text) continue;
+      // Skip very short fragments likely to be UI labels (but allow short headings)
+      const isHeading = /^H[1-6]$/.test(el.tagName);
+      if (!isHeading && text.length < 15) continue;
+      // Skip if mostly non-alphabetic (keyboard shortcuts, symbols, etc.)
+      const alphaRatio = (text.match(/[a-zA-ZÀ-ÿ]/g) || []).length / text.length;
+      if (alphaRatio < 0.5) continue;
+
+      // If it's a heading, flush current buffer and add heading as its own chunk
+      if (isHeading) {
+        if (current.trim()) {
+          chunks.push(current.trim());
+          current = "";
+        }
+        // Don't re-add the title
+        if (text !== title) {
+          chunks.push(text);
+        }
+        continue;
+      }
+
       current += " " + text;
-      // Split into ~500 char chunks at sentence boundaries
-      if (current.length > 500) {
+
+      // Split into ~800 char chunks at sentence boundaries
+      if (current.length > 800) {
         const sentenceEnd = current.search(/[.!?]\s/);
         if (sentenceEnd > 100) {
           chunks.push(current.substring(0, sentenceEnd + 1).trim());
@@ -149,9 +142,11 @@
         }
       }
     }
+
     if (current.trim()) {
       chunks.push(current.trim());
     }
+
     return chunks;
   }
 
@@ -256,7 +251,8 @@
     }
   }
 
-  function speakChunk(index) {
+  function speakChunk(index, gen) {
+    if (gen !== generation) return; // stale callback from a previous play/stop cycle
     if (index >= currentUtterances.length) {
       state = "stopped";
       stopKeepAlive();
@@ -274,12 +270,10 @@
     if (voice) utterance.voice = voice;
 
     utterance.onend = () => {
-      if (cancelledByUser) {
-        cancelledByUser = false;
-        return;
-      }
+      // Only chain to next chunk if this generation is still current
+      if (gen !== generation) return;
       if (state === "playing") {
-        speakChunk(index + 1);
+        speakChunk(index + 1, gen);
       }
     };
 
@@ -295,7 +289,7 @@
   }
 
   function play(speed, voiceURI) {
-    cancelledByUser = true;
+    generation++; // invalidate any pending callbacks
     speechSynthesis.cancel();
     currentSpeed = speed || currentSpeed;
     if (voiceURI !== undefined) selectedVoiceURI = voiceURI;
@@ -314,21 +308,18 @@
     state = "playing";
     notifyState();
 
+    const gen = generation;
     const voices = speechSynthesis.getVoices();
     if (voices.length === 0) {
       speechSynthesis.addEventListener("voiceschanged", () => {
         sendVoiceList();
-        // Reset flag right before starting playback
-        cancelledByUser = false;
         startKeepAlive();
-        speakChunk(0);
+        speakChunk(0, gen);
       }, { once: true });
     } else {
       sendVoiceList();
-      // Reset flag right before starting playback
-      cancelledByUser = false;
       startKeepAlive();
-      speakChunk(0);
+      speakChunk(0, gen);
     }
   }
 
@@ -347,7 +338,7 @@
   }
 
   function stop() {
-    cancelledByUser = true;
+    generation++; // invalidate pending callbacks
     speechSynthesis.cancel();
     state = "stopped";
     currentUtterances = [];
@@ -359,20 +350,20 @@
   function setSpeed(speed) {
     currentSpeed = speed;
     if (state === "playing") {
-      cancelledByUser = true;
+      generation++;
       speechSynthesis.cancel();
-      cancelledByUser = false;
-      speakChunk(currentIndex);
+      const gen = generation;
+      speakChunk(currentIndex, gen);
     }
   }
 
   function setVoice(voiceURI) {
     selectedVoiceURI = voiceURI;
     if (state === "playing") {
-      cancelledByUser = true;
+      generation++;
       speechSynthesis.cancel();
-      cancelledByUser = false;
-      speakChunk(currentIndex);
+      const gen = generation;
+      speakChunk(currentIndex, gen);
     }
   }
 

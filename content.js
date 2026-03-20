@@ -9,40 +9,46 @@
   let detectedLang = "en";
   let currentSpeed = 1.0;
   let selectedVoiceURI = null;
-  let generation = 0; // incremented on each play/stop/setSpeed/setVoice to invalidate old callbacks
+  let generation = 0;
   let keepAliveTimer = null;
 
-  // ---- Ad / junk selectors to skip ----
-  const AD_SELECTORS = [
-    "[class*='ad-']", "[class*='ad_']", "[class*='ads-']", "[class*='ads_']",
-    "[class*='advert']", "[class*='sponsor']", "[class*='promo']",
-    "[class*='outbrain']", "[class*='taboola']", "[class*='related']",
-    "[class*='recommended']", "[class*='sidebar']", "[class*='widget']",
-    "[class*='newsletter']", "[class*='share']", "[class*='social']",
-    "[class*='comment']", "[class*='cookie']", "[class*='popup']",
-    "[class*='modal']", "[class*='banner']", "[class*='callout']",
-    "[class*='recirc']", "[class*='trending']", "[class*='popular']",
-    "[class*='more-stories']", "[class*='read-more']",
-    "[id*='ad-']", "[id*='ad_']", "[id*='ads-']", "[id*='ads_']",
-    "[id*='advert']", "[id*='sponsor']", "[id*='sidebar']",
-    "[id*='related']", "[id*='recommended']", "[id*='comment']",
-    "[id*='newsletter']", "[id*='cookie']",
-    "[data-ad]", "[data-ads]", "[data-ad-slot]", "[data-testid*='ad']",
-    "aside", "ins.adsbygoogle", ".ad", ".ads", "#ad", "#ads",
-    "[role='complementary']", "[role='banner']",
-    "[aria-label*='publicité']", "[aria-label*='advertisement']",
-    "[aria-label*='sponsored']",
-    "nav", "footer", "header",
-    "[role='navigation']", "[role='contentinfo']", "[role='search']",
-  ];
-
-  const AD_SELECTOR_COMBINED = AD_SELECTORS.join(", ");
-
   /**
-   * Check if an element is inside an ad/junk/nav container.
+   * Check if an element is clearly an ad or non-article junk.
+   * Uses tight selectors that won't match legitimate article content.
    */
-  function isJunk(el) {
-    return !!el.closest(AD_SELECTOR_COMBINED);
+  function isAdElement(el) {
+    // Walk up from the element to check ancestors (but not beyond the article root)
+    let node = el;
+    while (node && node !== document.body) {
+      const tag = node.tagName;
+      // Skip nav, footer, aside, header tags
+      if (tag === "NAV" || tag === "FOOTER" || tag === "ASIDE") return true;
+
+      const cls = (node.className || "").toString().toLowerCase();
+      const id = (node.id || "").toLowerCase();
+
+      // Ad networks
+      if (cls.includes("adsbygoogle") || cls.includes("outbrain") || cls.includes("taboola")) return true;
+      if (tag === "INS" && cls.includes("ads")) return true;
+
+      // Exact class/id patterns for ads (word-boundary-ish checks)
+      if (/\bad\b|\bads\b|\badvert/.test(cls) || /\bad\b|\bads\b|\badvert/.test(id)) return true;
+      if (/\bsponsor/.test(cls) || /\bsponsor/.test(id)) return true;
+
+      // Sidebar, newsletter, comments — only if they're container divs, not inline elements
+      if (node !== el && (tag === "DIV" || tag === "SECTION")) {
+        if (/\bsidebar\b|\bnewsletter\b|\bcomment/.test(cls)) return true;
+        if (/\bsidebar\b|\bnewsletter\b|\bcomment/.test(id)) return true;
+        if (/\brecirc\b|\btrending\b|\bmore-stories\b|\bread-more\b/.test(cls)) return true;
+      }
+
+      // ARIA roles
+      const role = node.getAttribute("role");
+      if (role === "complementary" || role === "navigation" || role === "search") return true;
+
+      node = node.parentElement;
+    }
+    return false;
   }
 
   /**
@@ -72,59 +78,89 @@
   }
 
   /**
-   * Extract readable article text using semantic elements only.
-   * Reads: title, then h2-h6 headings and <p>, <blockquote>, <li>, <figcaption> within the article.
-   * Skips: ads, nav, sidebar, comments, share widgets, cookie banners, etc.
+   * Find the best article root element.
+   */
+  function findArticleRoot() {
+    // Try specific article selectors
+    const selectors = [
+      "article .body__inner-container",
+      "article .article-body",
+      "article .article__body",
+      "article .post-content",
+      "article .entry-content",
+      ".article-body",
+      ".article__body",
+      ".post-content",
+      ".entry-content",
+      ".story-body",
+      ".article-content",
+      ".body__inner-container",
+      "article",
+      "[role='article']",
+      "main",
+      "[role='main']",
+    ];
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (el) {
+        // Verify it has some paragraph content
+        const pCount = el.querySelectorAll("p").length;
+        if (pCount >= 2) return el;
+      }
+    }
+    return document.body;
+  }
+
+  /**
+   * Extract readable article text.
+   * Strategy: find the article root, collect all <p> and heading elements,
+   * filter out only clearly-ad elements with tight checks.
    */
   function extractText() {
-    // Find main content area
-    const root = document.querySelector(
-      "article, [role='article'], main, [role='main'], " +
-      ".article-body, .article__body, .post-content, .entry-content, " +
-      ".story-body, .article-content, .body__inner-container"
-    ) || document.body;
+    const root = findArticleRoot();
 
-    // Semantic elements that contain readable article text
+    // Collect semantic content elements
     const contentElements = root.querySelectorAll(
-      "p, h1, h2, h3, h4, h5, h6, blockquote, li, figcaption, " +
-      "[class*='paragraph'], [class*='body-text'], [data-testid*='paragraph']"
+      "p, h2, h3, h4, h5, h6, blockquote, figcaption"
     );
 
     const chunks = [];
-
-    // Start with the title
     const title = extractTitle();
     if (title) {
       chunks.push(title);
     }
 
     let current = "";
+    const seenTexts = new Set();
+    if (title) seenTexts.add(title);
 
     for (const el of contentElements) {
-      // Skip if inside junk container
-      if (isJunk(el)) continue;
-      // Skip if not visible
       if (!isVisible(el)) continue;
+      if (isAdElement(el)) continue;
 
       const text = el.textContent.trim();
       if (!text) continue;
-      // Skip very short fragments likely to be UI labels (but allow short headings)
-      const isHeading = /^H[1-6]$/.test(el.tagName);
-      if (!isHeading && text.length < 15) continue;
-      // Skip if mostly non-alphabetic (keyboard shortcuts, symbols, etc.)
-      const alphaRatio = (text.match(/[a-zA-ZÀ-ÿ]/g) || []).length / text.length;
-      if (alphaRatio < 0.5) continue;
 
-      // If it's a heading, flush current buffer and add heading as its own chunk
+      // Deduplicate (title, repeated elements)
+      if (seenTexts.has(text)) continue;
+      seenTexts.add(text);
+
+      const isHeading = /^H[1-6]$/.test(el.tagName);
+
+      // Skip very short non-heading text (likely UI cruft)
+      if (!isHeading && text.length < 20) continue;
+
+      // Skip text that's mostly non-alphabetic
+      const alphaCount = (text.match(/[a-zA-ZÀ-ÿ]/g) || []).length;
+      if (alphaCount / text.length < 0.5) continue;
+
+      // Headings become their own chunk
       if (isHeading) {
         if (current.trim()) {
           chunks.push(current.trim());
           current = "";
         }
-        // Don't re-add the title
-        if (text !== title) {
-          chunks.push(text);
-        }
+        chunks.push(text);
         continue;
       }
 
@@ -171,9 +207,6 @@
     return (frCount / wordCount) > 0.08 ? "fr" : "en";
   }
 
-  /**
-   * Get all available voices for a language, sorted by quality.
-   */
   function getVoicesForLang(lang) {
     const voices = speechSynthesis.getVoices();
     const langPrefix = lang === "fr" ? "fr" : "en";
@@ -188,9 +221,6 @@
       });
   }
 
-  /**
-   * Find the voice to use: selected by user, or best default.
-   */
   function getActiveVoice() {
     const voices = speechSynthesis.getVoices();
     if (selectedVoiceURI) {
@@ -211,7 +241,7 @@
         total: currentUtterances.length,
       },
       ...extra,
-    });
+    }).catch(() => {}); // popup may be closed
   }
 
   function sendVoiceList() {
@@ -227,13 +257,9 @@
       type: "tts-voices",
       voices: voiceList,
       selectedVoiceURI: active ? active.voiceURI : null,
-    });
+    }).catch(() => {}); // popup may be closed
   }
 
-  /**
-   * Chrome bug workaround: Chrome stops speech synthesis after ~15 seconds.
-   * Periodically pause/resume to keep it alive.
-   */
   function startKeepAlive() {
     stopKeepAlive();
     keepAliveTimer = setInterval(() => {
@@ -252,7 +278,7 @@
   }
 
   function speakChunk(index, gen) {
-    if (gen !== generation) return; // stale callback from a previous play/stop cycle
+    if (gen !== generation) return;
     if (index >= currentUtterances.length) {
       state = "stopped";
       stopKeepAlive();
@@ -270,7 +296,6 @@
     if (voice) utterance.voice = voice;
 
     utterance.onend = () => {
-      // Only chain to next chunk if this generation is still current
       if (gen !== generation) return;
       if (state === "playing") {
         speakChunk(index + 1, gen);
@@ -289,7 +314,7 @@
   }
 
   function play(speed, voiceURI) {
-    generation++; // invalidate any pending callbacks
+    generation++;
     speechSynthesis.cancel();
     currentSpeed = speed || currentSpeed;
     if (voiceURI !== undefined) selectedVoiceURI = voiceURI;
@@ -338,7 +363,7 @@
   }
 
   function stop() {
-    generation++; // invalidate pending callbacks
+    generation++;
     speechSynthesis.cancel();
     state = "stopped";
     currentUtterances = [];
@@ -367,7 +392,6 @@
     }
   }
 
-  // Listen for messages from popup
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     switch (msg.action) {
       case "play":

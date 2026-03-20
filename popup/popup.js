@@ -67,7 +67,7 @@ btnStop.addEventListener("click", () => {
 
 function sendToContent(action, data = {}) {
   if (!currentTabId) return;
-  chrome.tabs.sendMessage(currentTabId, { action, ...data });
+  chrome.tabs.sendMessage(currentTabId, { action, ...data }).catch(() => {});
 }
 
 async function getCurrentTab() {
@@ -166,10 +166,8 @@ chrome.runtime.onMessage.addListener((msg) => {
   const tab = await getCurrentTab();
   if (tab) {
     currentTabId = tab.id;
-    try {
-      chrome.tabs.sendMessage(tab.id, { action: "getState" });
-    } catch {
+    chrome.tabs.sendMessage(tab.id, { action: "getState" }).catch(() => {
       // Content script not yet injected
-    }
+    });
   }
 })();

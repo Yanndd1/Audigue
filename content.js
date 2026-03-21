@@ -313,11 +313,20 @@
     speechSynthesis.speak(utterance);
   }
 
+  /**
+   * Sanitize speed value to a safe finite number within allowed range.
+   */
+  function sanitizeSpeed(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return currentSpeed;
+    return Math.max(0.5, Math.min(3, n));
+  }
+
   function play(speed, voiceURI) {
     generation++;
     speechSynthesis.cancel();
-    currentSpeed = speed || currentSpeed;
-    if (voiceURI !== undefined) selectedVoiceURI = voiceURI;
+    currentSpeed = sanitizeSpeed(speed);
+    if (typeof voiceURI === "string" && voiceURI) selectedVoiceURI = voiceURI;
 
     const chunks = extractText();
     if (!chunks.length) {
@@ -373,7 +382,7 @@
   }
 
   function setSpeed(speed) {
-    currentSpeed = speed;
+    currentSpeed = sanitizeSpeed(speed);
     if (state === "playing") {
       generation++;
       speechSynthesis.cancel();
@@ -383,6 +392,7 @@
   }
 
   function setVoice(voiceURI) {
+    if (typeof voiceURI !== "string") return;
     selectedVoiceURI = voiceURI;
     if (state === "playing") {
       generation++;

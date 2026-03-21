@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Audigue - Web Page Reader",
-  "description": "Read any web page aloud in English or French using local text-to-speech",
-  "version": "1.0.0",
+  "description": "Read any web page aloud in English or French using local text-to-speech. No data ever leaves your browser.",
+  "version": "1.1.0",
   "permissions": ["activeTab", "scripting", "storage"],
   "action": {
     "default_popup": "popup/popup.html",
@@ -16,8 +16,5 @@
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  },
-  "background": {
-    "service_worker": "background.js"
   }
 }

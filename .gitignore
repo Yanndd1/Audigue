@@ -16,3 +16,9 @@ Thumbs.db
 *.pem
 *.zip
 web-ext-artifacts/
+
+# Claude Code
+.claude/
+
+# Firebase
+firebase-debug.log

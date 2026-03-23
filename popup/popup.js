@@ -8,15 +8,98 @@ const detectedLangEl = document.getElementById("detected-lang");
 const voiceSelect = document.getElementById("voice-select");
 const voiceHint = document.getElementById("voice-hint");
 
+// VoiceBox elements
+const vbToggle = document.getElementById("voicebox-toggle");
+const vbEngineLabel = document.getElementById("engine-label");
+const vbStatus = document.getElementById("voicebox-status");
+const vbProfileSelect = document.getElementById("vb-profile-select");
+const browserVoiceControl = document.getElementById("browser-voice-control");
+const voiceboxVoiceControl = document.getElementById("voicebox-voice-control");
+
 let currentTabId = null;
+let useVoiceBox = false;
 
 // Load saved preferences
-chrome.storage.local.get(["speed", "voiceURI"], (data) => {
+chrome.storage.local.get(["speed", "voiceURI", "useVoiceBox", "vbProfileId"], (data) => {
   if (data.speed) {
     speedSlider.value = data.speed;
     speedValue.textContent = parseFloat(data.speed).toFixed(1);
   }
-  // voiceURI will be applied when voice list arrives
+  if (data.useVoiceBox) {
+    useVoiceBox = true;
+    vbToggle.checked = true;
+    updateEngineUI();
+    loadVoiceBoxProfiles(data.vbProfileId);
+  }
+});
+
+// Engine toggle
+vbToggle.addEventListener("change", () => {
+  useVoiceBox = vbToggle.checked;
+  chrome.storage.local.set({ useVoiceBox });
+  updateEngineUI();
+  if (useVoiceBox) {
+    loadVoiceBoxProfiles();
+  }
+});
+
+function updateEngineUI() {
+  if (useVoiceBox) {
+    vbEngineLabel.textContent = "VoiceBox";
+    browserVoiceControl.style.display = "none";
+    voiceboxVoiceControl.style.display = "block";
+  } else {
+    vbEngineLabel.textContent = "Navigateur";
+    browserVoiceControl.style.display = "block";
+    voiceboxVoiceControl.style.display = "none";
+    vbStatus.textContent = "";
+    vbStatus.className = "voicebox-status";
+  }
+}
+
+async function loadVoiceBoxProfiles(savedProfileId) {
+  vbStatus.textContent = "Connexion…";
+  vbStatus.className = "voicebox-status";
+  try {
+    const resp = await fetch("http://localhost:17493/profiles");
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const profiles = await resp.json();
+
+    vbStatus.textContent = "Connecté";
+    vbStatus.className = "voicebox-status connected";
+
+    vbProfileSelect.innerHTML = "";
+    if (!profiles.length) {
+      vbProfileSelect.innerHTML = '<option value="">Aucun profil disponible</option>';
+      return;
+    }
+
+    // Load saved preference
+    chrome.storage.local.get("vbProfileId", (data) => {
+      const preferredId = savedProfileId || data.vbProfileId;
+
+      profiles.forEach((p) => {
+        const opt = document.createElement("option");
+        opt.value = p.id;
+        opt.textContent = p.name + (p.language ? ` [${p.language}]` : "");
+        if (p.id === preferredId) opt.selected = true;
+        vbProfileSelect.appendChild(opt);
+      });
+
+      // If nothing was selected, save the first one
+      if (!preferredId && profiles.length) {
+        chrome.storage.local.set({ vbProfileId: profiles[0].id });
+      }
+    });
+  } catch (e) {
+    vbStatus.textContent = "VoiceBox non disponible — vérifiez que l'application est lancée";
+    vbStatus.className = "voicebox-status error";
+    vbProfileSelect.innerHTML = '<option value="">Indisponible</option>';
+  }
+}
+
+vbProfileSelect.addEventListener("change", () => {
+  chrome.storage.local.set({ vbProfileId: vbProfileSelect.value });
 });
 
 speedSlider.addEventListener("input", () => {
@@ -52,8 +135,17 @@ btnPlay.addEventListener("click", async () => {
   }
 
   const speed = parseFloat(speedSlider.value);
-  const voiceURI = voiceSelect.value || undefined;
-  sendToContent("play", { speed, voiceURI });
+  const playMsg = { speed };
+
+  if (useVoiceBox) {
+    playMsg.voicebox = true;
+    playMsg.profileId = vbProfileSelect.value;
+  } else {
+    playMsg.voiceURI = voiceSelect.value || undefined;
+    playMsg.voicebox = false;
+  }
+
+  sendToContent("play", playMsg);
 });
 
 btnPause.addEventListener("click", () => {
@@ -115,15 +207,19 @@ function populateVoices(voices, selectedURI) {
   });
 }
 
-function updateUI(state, lang, chunkInfo) {
-  const progress = chunkInfo ? ` (${chunkInfo.current}/${chunkInfo.total})` : "";
+function updateUI(state, lang, chunkInfo, extra = {}) {
+  let progress = chunkInfo ? ` (${chunkInfo.current}/${chunkInfo.total})` : "";
   switch (state) {
     case "playing":
       btnPlay.disabled = true;
       btnPause.disabled = false;
       btnStop.disabled = false;
       btnPause.querySelector("span").textContent = "Pause";
-      statusEl.textContent = "Lecture en cours…" + progress;
+      if (extra.loading) {
+        statusEl.textContent = "Génération audio…" + progress;
+      } else {
+        statusEl.textContent = "Lecture en cours…" + progress;
+      }
       break;
     case "paused":
       btnPlay.disabled = true;
@@ -137,13 +233,13 @@ function updateUI(state, lang, chunkInfo) {
       btnPause.disabled = true;
       btnStop.disabled = true;
       btnPause.querySelector("span").textContent = "Pause";
-      statusEl.textContent = "";
+      statusEl.textContent = extra.error || "";
       break;
     case "error":
       btnPlay.disabled = false;
       btnPause.disabled = true;
       btnStop.disabled = true;
-      statusEl.textContent = "Erreur de lecture.";
+      statusEl.textContent = extra.error || "Erreur de lecture.";
       break;
   }
   if (lang) {
@@ -154,7 +250,7 @@ function updateUI(state, lang, chunkInfo) {
 // Listen for messages from content script
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "tts-state") {
-    updateUI(msg.state, msg.lang, msg.chunkInfo);
+    updateUI(msg.state, msg.lang, msg.chunkInfo, msg);
   }
   if (msg.type === "tts-voices") {
     populateVoices(msg.voices, msg.selectedVoiceURI);

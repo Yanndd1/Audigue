@@ -4,6 +4,7 @@
   "description": "Read any web page aloud in English or French using local text-to-speech. No data ever leaves your browser.",
   "version": "1.1.0",
   "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://localhost:17493/*"],
   "action": {
     "default_popup": "popup/popup.html",
     "default_icon": {

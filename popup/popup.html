@@ -15,12 +15,31 @@
     </div>
 
     <div class="controls">
-      <div class="voice-control">
+      <div class="engine-toggle">
+        <label class="toggle-label">
+          <span>Moteur :</span>
+          <div class="toggle-switch">
+            <input type="checkbox" id="voicebox-toggle">
+            <span class="toggle-slider"></span>
+          </div>
+          <span id="engine-label" class="engine-name">Navigateur</span>
+        </label>
+        <p class="voicebox-status" id="voicebox-status"></p>
+      </div>
+
+      <div class="voice-control" id="browser-voice-control">
         <label for="voice-select">Voix :</label>
         <select id="voice-select">
           <option value="">Cliquer sur Lire pour charger les voix</option>
         </select>
         <p class="voice-hint" id="voice-hint"></p>
+      </div>
+
+      <div class="voice-control" id="voicebox-voice-control" style="display:none">
+        <label for="vb-profile-select">Profil VoiceBox :</label>
+        <select id="vb-profile-select">
+          <option value="">Chargement…</option>
+        </select>
       </div>
 
       <div class="speed-control">

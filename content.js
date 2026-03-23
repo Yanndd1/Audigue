@@ -12,6 +12,12 @@
   let generation = 0;
   let keepAliveTimer = null;
 
+  // VoiceBox state
+  let useVoiceBox = false;
+  let vbProfileId = null;
+  let vbAudio = null; // current Audio element for VoiceBox playback
+  let vbAbortController = null; // to cancel in-flight fetches
+
   /**
    * Check if an element is clearly an ad or non-article junk.
    * Uses tight selectors that won't match legitimate article content.
@@ -112,11 +118,126 @@
   }
 
   /**
+   * Split a long text into ~800 char chunks at sentence boundaries.
+   */
+  function chunkText(text) {
+    const chunks = [];
+    let current = "";
+    const sentences = text.split(/(?<=[.!?])\s+/);
+    for (const sentence of sentences) {
+      if (!sentence.trim()) continue;
+      current += (current ? " " : "") + sentence;
+      if (current.length > 800) {
+        chunks.push(current.trim());
+        current = "";
+      }
+    }
+    if (current.trim()) chunks.push(current.trim());
+    return chunks;
+  }
+
+  /**
+   * Detect if current page is a known document editor and extract text.
+   * Returns null if not a recognized editor.
+   */
+  function extractFromEditor() {
+    const url = location.href;
+
+    // --- Google Docs ---
+    if (url.includes("docs.google.com/document/")) {
+      return extractFromGoogleDocs();
+    }
+
+    // --- Notion ---
+    if (url.includes("notion.so/") || url.includes("notion.site/")) {
+      return extractFromNotion();
+    }
+
+    // --- Generic contenteditable / rich text editor fallback ---
+    const editables = document.querySelectorAll(
+      '[contenteditable="true"][role="textbox"], [contenteditable="true"].ProseMirror, [contenteditable="true"].ql-editor'
+    );
+    if (editables.length) {
+      const texts = [];
+      for (const el of editables) {
+        const t = el.innerText.trim();
+        if (t.length > 50) texts.push(t);
+      }
+      if (texts.length) return chunkText(texts.join("\n\n"));
+    }
+
+    return null;
+  }
+
+  /**
+   * Extract text from Google Docs.
+   * Handles both the older HTML-based renderer (.kix-paragraphrenderer)
+   * and the newer canvas-based renderer (falls back to innerText).
+   */
+  function extractFromGoogleDocs() {
+    const paragraphs = [];
+
+    // Try .kix-paragraphrenderer elements (HTML renderer)
+    const kixParagraphs = document.querySelectorAll(".kix-paragraphrenderer");
+    if (kixParagraphs.length > 0) {
+      for (const p of kixParagraphs) {
+        const text = p.textContent.trim();
+        if (text) paragraphs.push(text);
+      }
+    }
+
+    // If kix didn't yield much, try the editor's innerText (canvas renderer)
+    if (paragraphs.join("").length < 100) {
+      const editor = document.querySelector(".kix-appview-editor")
+        || document.querySelector('[role="textbox"]')
+        || document.querySelector(".docs-editor-container");
+      if (editor) {
+        const text = editor.innerText.trim();
+        if (text.length > 50) return chunkText(text);
+      }
+    }
+
+    if (!paragraphs.length) return null;
+    return chunkText(paragraphs.join("\n"));
+  }
+
+  /**
+   * Extract text from Notion pages.
+   */
+  function extractFromNotion() {
+    const blocks = document.querySelectorAll(
+      '.notion-page-content [data-block-id], .notion-page-content [placeholder]'
+    );
+    const paragraphs = [];
+    for (const b of blocks) {
+      const text = b.innerText.trim();
+      if (text.length > 10) paragraphs.push(text);
+    }
+
+    // Fallback: get all text from the page content area
+    if (!paragraphs.length) {
+      const content = document.querySelector('.notion-page-content')
+        || document.querySelector('.layout-content');
+      if (content) {
+        const text = content.innerText.trim();
+        if (text.length > 50) return chunkText(text);
+      }
+    }
+
+    if (!paragraphs.length) return null;
+    return chunkText(paragraphs.join("\n"));
+  }
+
+  /**
    * Extract readable article text.
-   * Strategy: find the article root, collect all <p> and heading elements,
-   * filter out only clearly-ad elements with tight checks.
+   * Strategy: first try editor-specific extraction (Google Docs, Notion, etc.),
+   * then fall back to article/semantic extraction for regular web pages.
    */
   function extractText() {
+    // Try document editor extraction first
+    const editorChunks = extractFromEditor();
+    if (editorChunks && editorChunks.length > 0) return editorChunks;
+
     const root = findArticleRoot();
 
     // Collect semantic content elements
@@ -313,6 +434,79 @@
     speechSynthesis.speak(utterance);
   }
 
+  // --- VoiceBox TTS engine ---
+
+  function vbStopAudio() {
+    if (vbAbortController) {
+      vbAbortController.abort();
+      vbAbortController = null;
+    }
+    if (vbAudio) {
+      vbAudio.pause();
+      if (vbAudio.src) URL.revokeObjectURL(vbAudio.src);
+      vbAudio = null;
+    }
+  }
+
+  async function vbSpeakChunk(index, gen) {
+    if (gen !== generation) return;
+    if (index >= currentUtterances.length) {
+      state = "stopped";
+      notifyState();
+      return;
+    }
+    currentIndex = index;
+    notifyState({ loading: true });
+
+    vbAbortController = new AbortController();
+    try {
+      const resp = await fetch("http://localhost:17493/generate/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profile_id: vbProfileId,
+          text: currentUtterances[index],
+          language: detectedLang,
+        }),
+        signal: vbAbortController.signal,
+      });
+
+      if (gen !== generation) return;
+      if (!resp.ok) throw new Error(`VoiceBox HTTP ${resp.status}`);
+
+      const blob = await resp.blob();
+      if (gen !== generation) return;
+
+      const url = URL.createObjectURL(blob);
+      vbAudio = new Audio(url);
+      vbAudio.playbackRate = currentSpeed;
+
+      vbAudio.onended = () => {
+        URL.revokeObjectURL(url);
+        vbAudio = null;
+        if (gen !== generation) return;
+        if (state === "playing") {
+          vbSpeakChunk(index + 1, gen);
+        }
+      };
+
+      vbAudio.onerror = () => {
+        URL.revokeObjectURL(url);
+        console.error("Audigue VoiceBox audio playback error");
+        state = "stopped";
+        notifyState();
+      };
+
+      notifyState({ loading: false });
+      vbAudio.play();
+    } catch (e) {
+      if (e.name === "AbortError") return;
+      console.error("Audigue VoiceBox error:", e);
+      state = "stopped";
+      notifyState({ error: "VoiceBox indisponible" });
+    }
+  }
+
   /**
    * Sanitize speed value to a safe finite number within allowed range.
    */
@@ -322,11 +516,14 @@
     return Math.max(0.5, Math.min(3, n));
   }
 
-  function play(speed, voiceURI) {
+  function play(speed, voiceURI, voicebox, profileId) {
     generation++;
     speechSynthesis.cancel();
+    vbStopAudio();
     currentSpeed = sanitizeSpeed(speed);
     if (typeof voiceURI === "string" && voiceURI) selectedVoiceURI = voiceURI;
+    if (voicebox !== undefined) useVoiceBox = !!voicebox;
+    if (profileId) vbProfileId = profileId;
 
     const chunks = extractText();
     if (!chunks.length) {
@@ -343,30 +540,43 @@
     notifyState();
 
     const gen = generation;
-    const voices = speechSynthesis.getVoices();
-    if (voices.length === 0) {
-      speechSynthesis.addEventListener("voiceschanged", () => {
+
+    if (useVoiceBox && vbProfileId) {
+      vbSpeakChunk(0, gen);
+    } else {
+      const voices = speechSynthesis.getVoices();
+      if (voices.length === 0) {
+        speechSynthesis.addEventListener("voiceschanged", () => {
+          sendVoiceList();
+          startKeepAlive();
+          speakChunk(0, gen);
+        }, { once: true });
+      } else {
         sendVoiceList();
         startKeepAlive();
         speakChunk(0, gen);
-      }, { once: true });
-    } else {
-      sendVoiceList();
-      startKeepAlive();
-      speakChunk(0, gen);
+      }
     }
   }
 
   function pause() {
     if (state === "playing") {
-      speechSynthesis.pause();
+      if (useVoiceBox && vbAudio) {
+        vbAudio.pause();
+      } else {
+        speechSynthesis.pause();
+      }
       state = "paused";
       stopKeepAlive();
       notifyState();
     } else if (state === "paused") {
-      speechSynthesis.resume();
+      if (useVoiceBox && vbAudio) {
+        vbAudio.play();
+      } else {
+        speechSynthesis.resume();
+      }
       state = "playing";
-      startKeepAlive();
+      if (!useVoiceBox) startKeepAlive();
       notifyState();
     }
   }
@@ -374,6 +584,7 @@
   function stop() {
     generation++;
     speechSynthesis.cancel();
+    vbStopAudio();
     state = "stopped";
     currentUtterances = [];
     currentIndex = 0;
@@ -383,7 +594,9 @@
 
   function setSpeed(speed) {
     currentSpeed = sanitizeSpeed(speed);
-    if (state === "playing") {
+    if (useVoiceBox && vbAudio) {
+      vbAudio.playbackRate = currentSpeed;
+    } else if (state === "playing") {
       generation++;
       speechSynthesis.cancel();
       const gen = generation;
@@ -394,7 +607,7 @@
   function setVoice(voiceURI) {
     if (typeof voiceURI !== "string") return;
     selectedVoiceURI = voiceURI;
-    if (state === "playing") {
+    if (state === "playing" && !useVoiceBox) {
       generation++;
       speechSynthesis.cancel();
       const gen = generation;
@@ -405,7 +618,7 @@
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     switch (msg.action) {
       case "play":
-        play(msg.speed, msg.voiceURI);
+        play(msg.speed, msg.voiceURI, msg.voicebox, msg.profileId);
         break;
       case "pause":
         pause();

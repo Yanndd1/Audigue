@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Audigue - Web Page Reader",
-  "description": "Read any web page aloud in English or French using local text-to-speech. No data ever leaves your browser.",
+  "description": "Read any web page, Google Doc or Notion aloud in English or French. No tracking, no servers; your settings stay on your device.",
   "version": "1.1.0",
   "permissions": ["activeTab", "scripting", "storage"],
   "host_permissions": ["http://localhost:17493/*"],

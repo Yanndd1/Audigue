@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Audigue - Privacy Policy</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+      max-width: 720px;
+      margin: 2rem auto;
+      padding: 0 1.25rem;
+      color: #1a1a1a;
+    }
+    h1 { font-size: 1.8rem; margin-bottom: 0.25rem; }
+    h2 { font-size: 1.2rem; margin-top: 2rem; }
+    .updated { color: #666; font-size: 0.9rem; margin-top: 0; }
+    ul { padding-left: 1.25rem; }
+    code { background: #f2f2f2; padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.9em; }
+    footer { margin-top: 2.5rem; font-size: 0.85rem; color: #666; border-top: 1px solid #eee; padding-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Audigue - Privacy Policy</h1>
+  <p class="updated">Last updated: June 9, 2026</p>
+
+  <p>
+    Audigue ("the extension") is a browser extension that reads the text content of
+    web pages, Google Docs and Notion pages aloud using text-to-speech. This policy
+    explains what data the extension handles and how.
+  </p>
+
+  <h2>The short version</h2>
+  <p>
+    Audigue has no servers of its own. It does not collect, store or transmit your
+    personal data to the developer or to any third party. The only information it
+    saves is your own settings, kept locally in your browser.
+  </p>
+
+  <h2>What the extension accesses</h2>
+  <ul>
+    <li>
+      <strong>Page text.</strong> When you press Play, Audigue reads the visible text
+      of the page you are currently viewing. This text is used only to generate speech
+      and is not stored or sent to the developer.
+    </li>
+    <li>
+      <strong>Your preferences.</strong> Your reading speed, selected voice and chosen
+      engine are stored locally on your device using the browser's local storage
+      (<code>chrome.storage.local</code>). They never leave your browser.
+    </li>
+  </ul>
+
+  <h2>How the page text is processed</h2>
+  <p>Audigue offers two text-to-speech engines, and where your text goes depends on your choice:</p>
+  <ul>
+    <li>
+      <strong>VoiceBox engine (optional).</strong> The text is sent to the VoiceBox
+      application running locally on your own computer at
+      <code>http://localhost:17493</code>. It does not leave your machine and is not
+      sent to any remote server.
+    </li>
+    <li>
+      <strong>Browser engine, local (on-device) voices.</strong> Speech is produced
+      entirely on your device by your browser or operating system. The text does not
+      leave your machine.
+    </li>
+    <li>
+      <strong>Browser engine, network voices.</strong> Some voices provided by your
+      browser or operating system are "network" voices. When you select one of these,
+      the page text may be sent by your operating system or browser to its voice
+      provider in order to generate the audio. This processing is performed by your
+      system's voice provider, not by Audigue. Audigue labels these voices in its
+      interface so you can choose a local voice if you prefer.
+    </li>
+  </ul>
+
+  <h2>Data sharing and selling</h2>
+  <p>
+    Audigue does not sell or transfer your data to third parties. It does not use your
+    data for advertising, profiling, creditworthiness or any purpose unrelated to
+    reading pages aloud.
+  </p>
+
+  <h2>Permissions</h2>
+  <ul>
+    <li><strong>activeTab</strong> - to access the page you are currently viewing, only when you use the extension.</li>
+    <li><strong>scripting</strong> - to extract the readable text from the active tab.</li>
+    <li><strong>storage</strong> - to remember your preferences locally.</li>
+    <li><strong>host permission (localhost:17493)</strong> - to talk to the optional local VoiceBox application.</li>
+  </ul>
+
+  <h2>Children</h2>
+  <p>Audigue is not directed at children and does not knowingly collect any data from children.</p>
+
+  <h2>Changes to this policy</h2>
+  <p>
+    If this policy changes, the "Last updated" date above will be revised. Continued
+    use of the extension after a change constitutes acceptance of the updated policy.
+  </p>
+
+  <h2>Contact</h2>
+  <p>
+    Questions about this policy can be sent to:
+    <a href="mailto:daudin.yann@gmail.com">daudin.yann@gmail.com</a>.
+  </p>
+
+  <footer>
+    Audigue is free and open source. This policy applies to version 1.1.0 of the extension.
+  </footer>
+</body>
+</html>
